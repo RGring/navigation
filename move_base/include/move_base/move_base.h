@@ -52,6 +52,8 @@
 #include <costmap_2d/costmap_2d_ros.h>
 #include <costmap_2d/costmap_2d.h>
 #include <nav_msgs/GetPlan.h>
+#include <std_srvs/Empty.h>
+#include <flatland_msgs/Step.h>
 
 #include <pluginlib/class_loader.h>
 #include <std_srvs/Empty.h>
@@ -76,6 +78,11 @@ namespace move_base {
     OSCILLATION_R
   };
 
+  enum RlState {
+    IN_EXECUTION_SIM,
+    IN_TRAINING,
+    IN_EXECUTION_RW
+  };
   /**
    * @class MoveBase
    * @brief A class that uses the actionlib::ActionServer interface that moves the robot base to a goal location.
@@ -197,6 +204,11 @@ namespace move_base {
       ros::ServiceServer make_plan_srv_, clear_costmaps_srv_;
       bool shutdown_costmaps_, clearing_rotation_allowed_, recovery_behavior_enabled_;
       double oscillation_timeout_, oscillation_distance_;
+
+      int rl_mode_;
+      //Flatland services
+      ros::ServiceClient step_simulation_;
+      ros::ServiceClient is_in_step_;
 
       MoveBaseState state_;
       RecoveryTrigger recovery_trigger_;

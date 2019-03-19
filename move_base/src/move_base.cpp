@@ -76,6 +76,8 @@ namespace move_base {
 
     private_nh.param("oscillation_timeout", oscillation_timeout_, 0.0);
     private_nh.param("oscillation_distance", oscillation_distance_, 0.5);
+    std::string train_mode_topic = ros::this_node::getNamespace() + "/rl_agent/train_mode";
+    private_nh->param(train_mode_topic, rl_mode_, 2);
 
     //set up plan triple buffer
     planner_plan_ = new std::vector<geometry_msgs::PoseStamped>();
@@ -138,6 +140,13 @@ namespace move_base {
     // Start actively updating costmaps based on sensor data
     planner_costmap_ros_->start();
     controller_costmap_ros_->start();
+
+    // Services to interact with flatland simulation
+    std::string step_topic = ros::this_node::getNamespace() + "/step";
+    step_simulation_ = private_nh_->serviceClient<flatland_msgs::Step>(step_topic);
+
+    std::string is_in_step_topic = ros::this_node::getNamespace() + "/is_in_step";
+    is_in_step_ = private_nh_->serviceClient<std_srvs::SetBool>(is_in_step_topic);
 
     //advertise a service for getting a plan
     make_plan_srv_ = private_nh.advertiseService("make_plan", &MoveBase::planService, this);
@@ -764,8 +773,8 @@ namespace move_base {
 
       ros::WallDuration t_diff = ros::WallTime::now() - start;
       ROS_DEBUG_NAMED("move_base","Full control cycle time: %.9f\n", t_diff.toSec());
-
-      r.sleep();
+      if (rl_mode_==IN_EXECUTION_RW)
+        r.sleep();
       //make sure to sleep for the remainder of our cycle time
       if(r.cycleTime() > ros::Duration(1 / controller_frequency_) && state_ == CONTROLLING)
         ROS_WARN("Control loop missed its desired rate of %.4fHz... the loop actually took %.4f seconds", controller_frequency_, r.cycleTime().toSec());
@@ -887,23 +896,56 @@ namespace move_base {
         }
 
         //check for an oscillation condition
-        if(oscillation_timeout_ > 0.0 &&
-            last_oscillation_reset_ + ros::Duration(oscillation_timeout_) < ros::Time::now())
-        {
-          publishZeroVelocity();
-          state_ = CLEARING;
-          recovery_trigger_ = OSCILLATION_R;
+        if(rl_mode_ != IN_TRAINING){
+          if(oscillation_timeout_ > 0.0 &&
+              last_oscillation_reset_ + ros::Duration(oscillation_timeout_) < ros::Time::now())
+          {
+            publishZeroVelocity();
+            state_ = CLEARING;
+            recovery_trigger_ = OSCILLATION_R;
+          }
         }
         
         {
          boost::unique_lock<costmap_2d::Costmap2D::mutex_t> lock(*(controller_costmap_ros_->getCostmap()->getMutex()));
         
+        //Waiting for simulation to finish
+        {
+          if (rl_mode_ == IN_TRAINING || rl_mode_ == IN_EXECUTION_SIM){
+            std_srvs::SetBool msg2;
+            msg2.response.success = true;
+            ros::WallTime start = ros::WallTime::now();
+            while(msg2.response.success){
+              if(!is_in_step_.call(msg2)){
+                ROS_ERROR("Failed to call is_in_step service");
+              }
+              // ROS_WARN("no success");
+            }
+            // ROS_WARN("is_in_step time: %f", (ros::WallTime::now() - start).toSec());
+          }
+        } 
         if(tc_->computeVelocityCommands(cmd_vel)){
           ROS_DEBUG_NAMED( "move_base", "Got a valid command from the local planner: %.3lf, %.3lf, %.3lf",
                            cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z );
           last_valid_control_ = ros::Time::now();
           //make sure that we send the velocity command to the base
           vel_pub_.publish(cmd_vel);
+          //Make step in flatland simulation 
+          if (rl_mode_ == IN_TRAINING || rl_mode_ == IN_EXECUTION_SIM){
+            flatland_msgs::Step msg;
+            msg.request.step_time.data = 0.1;
+            msg.response.success = false;
+            int i = 0;
+            while(!msg.response.success){
+              if(!step_simulation_.call(msg)){
+                ROS_ERROR("Failed to call step_simulation_ service");
+              }
+              if(i >= 1){
+                ROS_WARN("Simulation step not finished");
+              }
+              i+=1;
+            }
+          }
           if(recovery_trigger_ == CONTROLLING_R)
             recovery_index_ = 0;
         }
