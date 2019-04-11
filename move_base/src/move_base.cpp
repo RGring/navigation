@@ -50,7 +50,7 @@ namespace move_base {
     as_(NULL),
     planner_costmap_ros_(NULL), controller_costmap_ros_(NULL),
     bgp_loader_("nav_core", "nav_core::BaseGlobalPlanner"),
-    blp_loader_("nav_core", "nav_core::BaseLocalPlanner"), 
+    blp_loader_("nav_core", "nav_core::BaseLocalPlanner"),
     recovery_loader_("nav_core", "nav_core::RecoveryBehavior"),
     planner_plan_(NULL), latest_plan_(NULL), controller_plan_(NULL),
     runPlanner_(false), setup_(false), p_freq_change_(false), c_freq_change_(false), new_global_plan_(false) {
@@ -77,7 +77,7 @@ namespace move_base {
     private_nh.param("oscillation_timeout", oscillation_timeout_, 0.0);
     private_nh.param("oscillation_distance", oscillation_distance_, 0.5);
     std::string train_mode_topic = ros::this_node::getNamespace() + "/rl_agent/train_mode";
-    private_nh->param(train_mode_topic, rl_mode_, 2);
+    private_nh.param(train_mode_topic, rl_mode_, 2);
 
     //set up plan triple buffer
     planner_plan_ = new std::vector<geometry_msgs::PoseStamped>();
@@ -143,10 +143,10 @@ namespace move_base {
 
     // Services to interact with flatland simulation
     std::string step_topic = ros::this_node::getNamespace() + "/step";
-    step_simulation_ = private_nh_->serviceClient<flatland_msgs::Step>(step_topic);
+    step_simulation_ = private_nh.serviceClient<flatland_msgs::Step>(step_topic);
 
     std::string is_in_step_topic = ros::this_node::getNamespace() + "/is_in_step";
-    is_in_step_ = private_nh_->serviceClient<std_srvs::SetBool>(is_in_step_topic);
+    is_in_step_ = private_nh.serviceClient<std_srvs::SetBool>(is_in_step_topic);
 
     //advertise a service for getting a plan
     make_plan_srv_ = private_nh.advertiseService("make_plan", &MoveBase::planService, this);
@@ -378,7 +378,7 @@ namespace move_base {
     //first try to make a plan to the exact desired goal
     std::vector<geometry_msgs::PoseStamped> global_plan;
     if(!planner_->makePlan(start, req.goal, global_plan) || global_plan.empty()){
-      ROS_DEBUG_NAMED("move_base","Failed to find a plan to exact goal of (%.2f, %.2f), searching for a feasible goal within tolerance", 
+      ROS_DEBUG_NAMED("move_base","Failed to find a plan to exact goal of (%.2f, %.2f), searching for a feasible goal within tolerance",
           req.goal.pose.position.x, req.goal.pose.position.y);
 
       //search outwards for a feasible goal within the specified tolerance
@@ -636,11 +636,11 @@ namespace move_base {
 
       //setup sleep interface if needed
       if(planner_frequency_ > 0){
-        ros::Duration sleep_time = (start_time + ros::Duration(1.0/planner_frequency_)) - ros::Time::now();
-        if (sleep_time > ros::Duration(0.0)){
-          wait_for_wake = true;
-          timer = n.createTimer(sleep_time, &MoveBase::wakePlanner, this);
-        }
+        // ros::Duration sleep_time = (start_time + ros::Duration(1.0/planner_frequency_)) - ros::Time::now();
+        // if (sleep_time > ros::Duration(0.0)){
+        //   wait_for_wake = true;
+        //   timer = n.createTimer(sleep_time, &MoveBase::wakePlanner, this);
+        // }
       }
     }
   }
@@ -773,8 +773,11 @@ namespace move_base {
 
       ros::WallDuration t_diff = ros::WallTime::now() - start;
       ROS_DEBUG_NAMED("move_base","Full control cycle time: %.9f\n", t_diff.toSec());
-      if (rl_mode_==IN_EXECUTION_RW)
+      if (rl_mode_==IN_EXECUTION_RW){
+        ROS_WARN("Sleep");
         r.sleep();
+      }
+
       //make sure to sleep for the remainder of our cycle time
       if(r.cycleTime() > ros::Duration(1 / controller_frequency_) && state_ == CONTROLLING)
         ROS_WARN("Control loop missed its desired rate of %.4fHz... the loop actually took %.4f seconds", controller_frequency_, r.cycleTime().toSec());
@@ -811,25 +814,22 @@ namespace move_base {
     move_base_msgs::MoveBaseFeedback feedback;
     feedback.base_position = current_position;
     as_->publishFeedback(feedback);
-
     //check to see if we've moved far enough to reset our oscillation timeout
     if(distance(current_position, oscillation_pose_) >= oscillation_distance_)
     {
       last_oscillation_reset_ = ros::Time::now();
       oscillation_pose_ = current_position;
 
-      //if our last recovery was caused by oscillation, we want to reset the recovery index 
+      //if our last recovery was caused by oscillation, we want to reset the recovery index
       if(recovery_trigger_ == OSCILLATION_R)
         recovery_index_ = 0;
     }
-
     //check that the observation buffers for the costmap are current, we don't want to drive blind
     if(!controller_costmap_ros_->isCurrent()){
       ROS_WARN("[%s]:Sensor data is out of date, we're not going to allow commanding of the base for safety",ros::this_node::getName().c_str());
       publishZeroVelocity();
       return false;
     }
-
     //if we have a new plan then grab it and give it to the controller
     if(new_global_plan_){
       //make sure to set the new plan flag to false
@@ -845,7 +845,6 @@ namespace move_base {
       latest_plan_ = temp_plan;
       lock.unlock();
       ROS_DEBUG_NAMED("move_base","pointers swapped!");
-
       if(!tc_->setPlan(*controller_plan_)){
         //ABORT and SHUTDOWN COSTMAPS
         ROS_ERROR("Failed to pass global plan to the controller, aborting.");
@@ -873,6 +872,7 @@ namespace move_base {
           boost::recursive_mutex::scoped_lock lock(planner_mutex_);
           runPlanner_ = true;
           planner_cond_.notify_one();
+
         }
         ROS_DEBUG_NAMED("move_base","Waiting for plan, in the planning state.");
         break;
@@ -905,10 +905,10 @@ namespace move_base {
             recovery_trigger_ = OSCILLATION_R;
           }
         }
-        
+    
         {
          boost::unique_lock<costmap_2d::Costmap2D::mutex_t> lock(*(controller_costmap_ros_->getCostmap()->getMutex()));
-        
+
         //Waiting for simulation to finish
         {
           if (rl_mode_ == IN_TRAINING || rl_mode_ == IN_EXECUTION_SIM){
@@ -919,18 +919,18 @@ namespace move_base {
               if(!is_in_step_.call(msg2)){
                 ROS_ERROR("Failed to call is_in_step service");
               }
-              // ROS_WARN("no success");
             }
             // ROS_WARN("is_in_step time: %f", (ros::WallTime::now() - start).toSec());
           }
-        } 
+        }
         if(tc_->computeVelocityCommands(cmd_vel)){
           ROS_DEBUG_NAMED( "move_base", "Got a valid command from the local planner: %.3lf, %.3lf, %.3lf",
                            cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z );
           last_valid_control_ = ros::Time::now();
           //make sure that we send the velocity command to the base
           vel_pub_.publish(cmd_vel);
-          //Make step in flatland simulation 
+          
+          //Make step in flatland simulation
           if (rl_mode_ == IN_TRAINING || rl_mode_ == IN_EXECUTION_SIM){
             flatland_msgs::Step msg;
             msg.request.step_time.data = 0.1;
@@ -1052,7 +1052,7 @@ namespace move_base {
                     std::string name_i = behavior_list[i]["name"];
                     std::string name_j = behavior_list[j]["name"];
                     if(name_i == name_j){
-                      ROS_ERROR("A recovery behavior with the name %s already exists, this is not allowed. Using the default recovery behaviors instead.", 
+                      ROS_ERROR("A recovery behavior with the name %s already exists, this is not allowed. Using the default recovery behaviors instead.",
                           name_i.c_str());
                       return false;
                     }
@@ -1108,7 +1108,7 @@ namespace move_base {
         }
       }
       else{
-        ROS_ERROR("The recovery behavior specification must be a list, but is of XmlRpcType %d. We'll use the default recovery behaviors instead.", 
+        ROS_ERROR("The recovery behavior specification must be a list, but is of XmlRpcType %d. We'll use the default recovery behaviors instead.",
             behavior_list.getType());
         return false;
       }

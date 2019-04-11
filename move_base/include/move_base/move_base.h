@@ -52,7 +52,7 @@
 #include <costmap_2d/costmap_2d_ros.h>
 #include <costmap_2d/costmap_2d.h>
 #include <nav_msgs/GetPlan.h>
-#include <std_srvs/Empty.h>
+#include <std_srvs/SetBool.h>
 #include <flatland_msgs/Step.h>
 
 #include <pluginlib/class_loader.h>

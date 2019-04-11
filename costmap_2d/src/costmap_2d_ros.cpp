@@ -392,7 +392,7 @@ void Costmap2DROS::mapUpdateLoop(double frequency)
     return;
 
   ros::NodeHandle nh;
-  ros::Rate r(frequency);
+  ros::WallRate r(frequency);
   while (nh.ok() && !map_update_thread_shutdown_)
   {
     struct timeval start, end;
@@ -421,7 +421,7 @@ void Costmap2DROS::mapUpdateLoop(double frequency)
     }
     r.sleep();
     // make sure to sleep for the remainder of our cycle time
-    if (r.cycleTime() > ros::Duration(1 / frequency))
+    if (r.cycleTime() > ros::WallDuration(1 / frequency))
       ROS_WARN("Map update loop missed its desired rate of %.4fHz... the loop actually took %.4f seconds", frequency,
                r.cycleTime().toSec());
   }
@@ -469,7 +469,7 @@ void Costmap2DROS::start()
   stop_updates_ = false;
 
   // block until the costmap is re-initialized.. meaning one update cycle has run
-  ros::Rate r(100.0);
+  ros::WallRate r(100.0);
   while (ros::ok() && !initialized_)
     r.sleep();
 }
@@ -499,7 +499,7 @@ void Costmap2DROS::resume()
   stop_updates_ = false;
 
   // block until the costmap is re-initialized.. meaning one update cycle has run
-  ros::Rate r(100.0);
+  ros::WallRate r(100.0);
   while (!initialized_)
     r.sleep();
 }
