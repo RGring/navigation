@@ -915,12 +915,14 @@ namespace move_base {
             std_srvs::SetBool msg2;
             msg2.response.success = true;
             ros::WallTime start = ros::WallTime::now();
+            int i = 0;
             while(msg2.response.success){
               if(!is_in_step_.call(msg2)){
                 ROS_ERROR("Failed to call is_in_step service");
               }
+              i++;
             }
-            // ROS_WARN("is_in_step time: %f", (ros::WallTime::now() - start).toSec());
+            // ROS_WARN("is_in_step time: %f (n = %d)", (ros::WallTime::now() - start).toSec(), i);
           }
         }
         if(tc_->computeVelocityCommands(cmd_vel)){
