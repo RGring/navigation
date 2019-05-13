@@ -58,7 +58,6 @@ namespace move_base {
     as_ = new MoveBaseActionServer(ros::NodeHandle(), "move_base", boost::bind(&MoveBase::executeCb, this, _1), false);
 
     ros::NodeHandle private_nh("~");
-    ros::NodeHandle nh;
 
     recovery_trigger_ = PLANNING_R;
 
@@ -142,11 +141,11 @@ namespace move_base {
     controller_costmap_ros_->start();
 
     // Services to interact with flatland simulation
-    std::string step_topic = ros::this_node::getNamespace() + "/step";
-    step_simulation_ = private_nh.serviceClient<flatland_msgs::Step>(step_topic);
+    step_topic = ros::this_node::getNamespace() + "/step";
+    step_simulation_ = nh.serviceClient<flatland_msgs::Step>(step_topic, true);
 
-    std::string is_in_step_topic = ros::this_node::getNamespace() + "/is_in_step";
-    is_in_step_ = private_nh.serviceClient<std_srvs::SetBool>(is_in_step_topic);
+    is_in_step_topic = ros::this_node::getNamespace() + "/is_in_step";
+    is_in_step_ = nh.serviceClient<std_srvs::SetBool>(is_in_step_topic, true);
 
     //advertise a service for getting a plan
     make_plan_srv_ = private_nh.advertiseService("make_plan", &MoveBase::planService, this);
@@ -917,18 +916,29 @@ namespace move_base {
             ros::WallTime start = ros::WallTime::now();
             int i = 0;
             while(msg2.response.success){
-              if(!is_in_step_.call(msg2)){
-                ROS_ERROR("Failed to call is_in_step service");
+              if(is_in_step_.isValid()){
+                if(!is_in_step_.call(msg2)){
+                  ROS_ERROR("Failed to call is_in_step service");
+                }
+                i++;
+              }else{
+                is_in_step_ = nh.serviceClient<std_srvs::SetBool>(is_in_step_topic, true);
               }
-              i++;
             }
             // ROS_WARN("is_in_step time: %f (n = %d)", (ros::WallTime::now() - start).toSec(), i);
           }
         }
-        if(tc_->computeVelocityCommands(cmd_vel)){
+        if(tc_->computeVelocityCommands(cmd_vel) && cmd_vel.linear.x >= 0.0){
           ROS_DEBUG_NAMED( "move_base", "Got a valid command from the local planner: %.3lf, %.3lf, %.3lf",
                            cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z );
           last_valid_control_ = ros::Time::now();
+
+          // if (cmd_vel->linear.x < 0.0){
+          //   cmd_vel->linear.x = 0.0;
+          //   cmd_vel->angular.z = 0.0;
+          //   state_ = PLANNING;
+          // }
+
           //make sure that we send the velocity command to the base
           vel_pub_.publish(cmd_vel);
           
@@ -939,13 +949,17 @@ namespace move_base {
             msg.response.success = false;
             int i = 0;
             while(!msg.response.success){
-              if(!step_simulation_.call(msg)){
-                ROS_ERROR("Failed to call step_simulation_ service");
+              if(step_simulation_.isValid()){
+                if(!step_simulation_.call(msg)){
+                  ROS_ERROR("Failed to call step_simulation_ service");
+                }
+                if(i >= 1){
+                  ROS_WARN("Simulation step not finished");
+                }
+                i+=1;
+              }else{
+                step_simulation_ = nh.serviceClient<flatland_msgs::Step>(step_topic, true);
               }
-              if(i >= 1){
-                ROS_WARN("Simulation step not finished");
-              }
-              i+=1;
             }
           }
           if(recovery_trigger_ == CONTROLLING_R)
