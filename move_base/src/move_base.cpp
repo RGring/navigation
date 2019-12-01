@@ -76,7 +76,7 @@ namespace move_base {
     private_nh.param("oscillation_timeout", oscillation_timeout_, 0.0);
     private_nh.param("oscillation_distance", oscillation_distance_, 0.5);
     std::string train_mode_topic = ros::this_node::getNamespace() + "/rl_agent/train_mode";
-    private_nh.param(train_mode_topic, rl_mode_, 2);
+    private_nh.param(train_mode_topic, rl_mode_, 3);
 
     //set up plan triple buffer
     planner_plan_ = new std::vector<geometry_msgs::PoseStamped>();
@@ -137,7 +137,9 @@ namespace move_base {
     }
 
     // Start actively updating costmaps based on sensor data
-    planner_costmap_ros_->start();
+    // No costmap update during rl training needed.
+    if (rl_mode_ == NONE)
+      planner_costmap_ros_->start();
     controller_costmap_ros_->start();
 
     // Services to interact with flatland simulation
@@ -161,7 +163,7 @@ namespace move_base {
     }
 
     //load any user specified recovery behaviors, and if that fails load the defaults
-    if(!loadRecoveryBehaviors(private_nh)){
+    if(!loadRecoveryBehaviors(private_nh) && rl_mode_ == NONE){
       loadDefaultRecoveryBehaviors();
     }
 
@@ -372,7 +374,8 @@ namespace move_base {
     }
 
     //update the copy of the costmap the planner uses
-    clearCostmapWindows(2 * clearing_radius_, 2 * clearing_radius_);
+    if(rl_mode_ == NONE)
+      clearCostmapWindows(2 * clearing_radius_, 2 * clearing_radius_);
 
     //first try to make a plan to the exact desired goal
     std::vector<geometry_msgs::PoseStamped> global_plan;
@@ -439,6 +442,9 @@ namespace move_base {
 
   MoveBase::~MoveBase(){
     recovery_behaviors_.clear();
+    is_in_step_.shutdown();
+    step_simulation_.shutdown();
+
 
     delete dsrv_;
 
@@ -487,11 +493,11 @@ namespace move_base {
     tf::poseStampedTFToMsg(global_pose, start);
 
     //if the planner fails or returns a zero length plan, planning failed
+    ros::WallTime start_global_plan = ros::WallTime::now();
     if(!planner_->makePlan(start, goal, plan) || plan.empty()){
       ROS_DEBUG_NAMED("move_base","Failed to find a  plan to point (%.2f, %.2f)", goal.pose.position.x, goal.pose.position.y);
       return false;
     }
-
     return true;
   }
 
@@ -666,7 +672,9 @@ namespace move_base {
     ros::Rate r(controller_frequency_);
     if(shutdown_costmaps_){
       ROS_DEBUG_NAMED("move_base","Starting up costmaps that were shut down previously");
-      planner_costmap_ros_->start();
+      // No costmap update during rl training needed.
+      if(rl_mode_ == NONE)
+        planner_costmap_ros_->start();
       controller_costmap_ros_->start();
     }
 
@@ -773,7 +781,6 @@ namespace move_base {
       ros::WallDuration t_diff = ros::WallTime::now() - start;
       ROS_DEBUG_NAMED("move_base","Full control cycle time: %.9f\n", t_diff.toSec());
       if (rl_mode_==IN_EXECUTION_RW){
-        ROS_WARN("Sleep");
         r.sleep();
       }
 
@@ -824,7 +831,7 @@ namespace move_base {
         recovery_index_ = 0;
     }
     //check that the observation buffers for the costmap are current, we don't want to drive blind
-    if(!controller_costmap_ros_->isCurrent()){
+    if(!controller_costmap_ros_->isCurrent() && rl_mode_ == NONE){
       ROS_WARN("[%s]:Sensor data is out of date, we're not going to allow commanding of the base for safety",ros::this_node::getName().c_str());
       publishZeroVelocity();
       return false;
@@ -881,8 +888,8 @@ namespace move_base {
         ROS_DEBUG_NAMED("move_base","In controlling state.");
 
         //check to see if we've reached our goal
+        {
         if(tc_->isGoalReached()){
-          ROS_DEBUG_NAMED("move_base","Goal reached!");
           resetState();
 
           //disable the planner thread
@@ -893,9 +900,9 @@ namespace move_base {
           as_->setSucceeded(move_base_msgs::MoveBaseResult(), "Goal reached.");
           return true;
         }
-
+        }
         //check for an oscillation condition
-        if(rl_mode_ != IN_TRAINING){
+        if(rl_mode_ == NONE){
           if(oscillation_timeout_ > 0.0 &&
               last_oscillation_reset_ + ros::Duration(oscillation_timeout_) < ros::Time::now())
           {
@@ -913,7 +920,7 @@ namespace move_base {
           if (rl_mode_ == IN_TRAINING || rl_mode_ == IN_EXECUTION_SIM){
             std_srvs::SetBool msg2;
             msg2.response.success = true;
-            ros::WallTime start = ros::WallTime::now();
+            // ros::WallTime start = ros::WallTime::now();
             int i = 0;
             while(msg2.response.success){
               if(is_in_step_.isValid()){
@@ -922,23 +929,18 @@ namespace move_base {
                 }
                 i++;
               }else{
+                ROS_WARN("Reconnecting to is_in_step_-service");
                 is_in_step_ = nh.serviceClient<std_srvs::SetBool>(is_in_step_topic, true);
               }
             }
-            // ROS_WARN("is_in_step time: %f (n = %d)", (ros::WallTime::now() - start).toSec(), i);
           }
         }
-        if(tc_->computeVelocityCommands(cmd_vel) && cmd_vel.linear.x >= 0.0){
+        if(tc_->computeVelocityCommands(cmd_vel)){
+          
+
           ROS_DEBUG_NAMED( "move_base", "Got a valid command from the local planner: %.3lf, %.3lf, %.3lf",
                            cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z );
           last_valid_control_ = ros::Time::now();
-
-          // if (cmd_vel->linear.x < 0.0){
-          //   cmd_vel->linear.x = 0.0;
-          //   cmd_vel->angular.z = 0.0;
-          //   state_ = PLANNING;
-          // }
-
           //make sure that we send the velocity command to the base
           vel_pub_.publish(cmd_vel);
           
@@ -949,7 +951,7 @@ namespace move_base {
             msg.response.success = false;
             int i = 0;
             while(!msg.response.success){
-              if(step_simulation_.isValid()){
+              if(step_simulation_.isValid()) {
                 if(!step_simulation_.call(msg)){
                   ROS_ERROR("Failed to call step_simulation_ service");
                 }
@@ -958,6 +960,7 @@ namespace move_base {
                 }
                 i+=1;
               }else{
+                ROS_WARN("Reconnecting to step_simulation_-service");
                 step_simulation_ = nh.serviceClient<flatland_msgs::Step>(step_topic, true);
               }
             }
@@ -968,26 +971,27 @@ namespace move_base {
         else {
           ROS_DEBUG_NAMED("move_base", "The local planner could not find a valid plan.");
           ros::Time attempt_end = last_valid_control_ + ros::Duration(controller_patience_);
+          if(rl_mode_ == NONE){
+            //check if we've tried to find a valid control for longer than our time limit
+            if(ros::Time::now() > attempt_end){
+              //we'll move into our obstacle clearing mode
+              publishZeroVelocity();
+              state_ = CLEARING;
+              recovery_trigger_ = CONTROLLING_R;
+            }
+            else{
+              //otherwise, if we can't find a valid control, we'll go back to planning
+              last_valid_plan_ = ros::Time::now();
+              planning_retries_ = 0;
+              state_ = PLANNING;
+              publishZeroVelocity();
 
-          //check if we've tried to find a valid control for longer than our time limit
-          if(ros::Time::now() > attempt_end){
-            //we'll move into our obstacle clearing mode
-            publishZeroVelocity();
-            state_ = CLEARING;
-            recovery_trigger_ = CONTROLLING_R;
-          }
-          else{
-            //otherwise, if we can't find a valid control, we'll go back to planning
-            last_valid_plan_ = ros::Time::now();
-            planning_retries_ = 0;
-            state_ = PLANNING;
-            publishZeroVelocity();
-
-            //enable the planner thread in case it isn't running on a clock
-            boost::unique_lock<boost::recursive_mutex> lock(planner_mutex_);
-            runPlanner_ = true;
-            planner_cond_.notify_one();
-            lock.unlock();
+              //enable the planner thread in case it isn't running on a clock
+              boost::unique_lock<boost::recursive_mutex> lock(planner_mutex_);
+              runPlanner_ = true;
+              planner_cond_.notify_one();
+              lock.unlock();
+            }
           }
         }
         }

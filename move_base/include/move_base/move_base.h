@@ -81,7 +81,8 @@ namespace move_base {
   enum RlState {
     IN_EXECUTION_SIM,
     IN_TRAINING,
-    IN_EXECUTION_RW
+    IN_EXECUTION_RW,
+    NONE
   };
   /**
    * @class MoveBase
@@ -207,7 +208,9 @@ namespace move_base {
 
       int rl_mode_;
       //Flatland services
+      std::string step_topic;
       ros::ServiceClient step_simulation_;
+      std::string is_in_step_topic;
       ros::ServiceClient is_in_step_;
 
       MoveBaseState state_;
@@ -241,9 +244,8 @@ namespace move_base {
       move_base::MoveBaseConfig default_config_;
       bool setup_, p_freq_change_, c_freq_change_;
       bool new_global_plan_;
-      std::string step_topic, is_in_step_topic;
-      ros::NodeHandle nh;
 
+      ros::NodeHandle nh;
   };
 };
 #endif

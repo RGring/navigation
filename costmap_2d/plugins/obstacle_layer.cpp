@@ -93,6 +93,7 @@ void ObstacleLayer::onInitialize()
     bool inf_is_valid, clearing, marking;
 
     source_node.param("topic", topic, source);
+    topic = ros::this_node::getNamespace() + "/" + topic;
     source_node.param("sensor_frame", sensor_frame, std::string(""));
     source_node.param("observation_persistence", observation_keep_time, 0.0);
     source_node.param("expected_update_rate", expected_update_rate, 0.0);
